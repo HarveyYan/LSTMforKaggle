@@ -1,0 +1,7 @@
+__pycache__/
+.idea/
+cache/
+word_embedding/
+train.csv
+test.csv
+
