@@ -51,7 +51,7 @@ embedding matrix for embedding layer
 '''
 def generate_embeddings(model, tokenizer):
     print('Generating word embeddings')
-    missing_vocab = open(outpath +'missing_vocab.txt','r')
+    missing_vocab = open(outpath +'missing_vocab.txt','w')
     global embedding_mat, length
     word_index = tokenizer.word_index
     print('total words found:', len(word_index))
