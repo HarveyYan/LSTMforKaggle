@@ -46,25 +46,43 @@ def load_word2vec():
     model = gensim.models.KeyedVectors.load_word2vec_format('word_embedding/GoogleNews-vectors-negative300.bin.gz', binary=True)
     return model
 
+def load_glove():
+    model = {}
+    f = open('word_embedding/glove.840B.300d.txt')
+    for line in f:
+        values = line.split()
+        model[values[0]] = np.asarray(values[1:], dtype='float32')
+    f.close()
+    return model
+
 '''
 embedding matrix for embedding layer
 '''
 def generate_embeddings(model, tokenizer):
-    print('Generating word embeddings')
-    missing_vocab = open(outpath +'missing_vocab.txt','w')
     global embedding_mat, length
+    missing_vocab = open(outpath + 'missing_vocab.txt', 'w')
     word_index = tokenizer.word_index
     print('total words found:', len(word_index))
-    length = min(MAX_NB_WORDS,len(word_index)) + 1
+    length = min(MAX_NB_WORDS, len(word_index)) + 1
     embedding_mat = np.zeros((length, EMBEDDING_DIM))
-    for word, i in word_index.items():
-        if i > length:
-            continue
-        if word in model.vocab:
-            embedding_mat[i] = model.word_vec(word)
-        else:
-            print(word, 'not in model vocab')
-            missing_vocab.write(word+'\n')
+
+    if glove:
+        for word, i in word_index.items():
+            embedding_vector = model.get(word)
+            if embedding_vector is None:
+                print(word, 'not in model vocab')
+                missing_vocab.write(word + '\n')
+            else:
+                embedding_mat[i] = embedding_vector
+    else:
+        for word, i in word_index.items():
+            if i > length:
+                continue
+            if word in model.vocab:
+                embedding_mat[i] = model.word_vec(word)
+            else:
+                print(word, 'not in model vocab')
+                # missing_vocab.write(word+'\n')
     missing_vocab.close()
 
 
@@ -204,8 +222,16 @@ if __name__ == "__main__":
     labels = np.array(train_labels)
     print('acquired training and testing data')
 
-    model = load_word2vec()
-    print('word2vec model loaded')
+    if glove:
+        if os.path.exists('word_embedding/glove.840B.300d.txt'):
+            model = load_glove()
+        else:
+            raise RuntimeError('glove word embedding doesn\'t exist')
+    else:
+        if os.path.exists('word_embedding/GoogleNews-vectors-negative300.bin.gz'):
+            model = load_word2vec()
+        else:
+            raise RuntimeError('google word2vec word embedding doesn\'t exist')
     generate_embeddings(model, tokenizer)
     print('acquired embedding matrix')
 
