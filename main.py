@@ -11,6 +11,7 @@ import pandas as pd
 from keras.utils import plot_model
 import matplotlib.pyplot as plt
 import os
+from sklearn.metrics import roc_curve, auc
 
 '''
 hyper parameters
@@ -194,6 +195,7 @@ class LSTM_model:
                      class_weight=self.class_weights, callbacks=[early_stopping, model_checkpoint])
 
         plot_model(self.net, to_file=outpath+'net.png')
+        self.plot_roc([data_1_val,data_2_val], labels_val)
         np.savetxt(outpath + 'acc.txt', np.array(hist.history['acc']), delimiter=',')
         np.savetxt(outpath + 'val_acc.txt', np.array(hist.history['val_acc']), delimiter=',')
         np.savetxt(outpath + 'loss.txt', np.array(hist.history['loss']), delimiter=',')
@@ -208,6 +210,22 @@ class LSTM_model:
         preds /= 2
         submission = pd.DataFrame({'test_id': ids, 'is_duplicate': preds.ravel()})
         submission.to_csv(outpath + 'prediction.csv', index=False)
+
+    def plot_roc(self, data_validation, labels_validation):
+        preds = self.net.predict(data_validation, batch_size=2048)
+        fpr, tpr, _ = roc_curve(labels_validation, preds)
+        roc_auc = auc(fpr,tpr)
+        plt.figure()
+        plt.plot(fpr, tpr, color='darkorange', label='ROC curve (area = %0.2f)' % roc_auc)
+        plt.plot([0, 1], [0, 1], color='navy', linestyle='--')
+        plt.xlim([0.0, 1.0])
+        plt.ylim([0.0, 1.05])
+        plt.xlabel('False Positive Rate')
+        plt.ylabel('True Positive Rate')
+        plt.title('Receiver operating characteristic example')
+        plt.legend(loc="lower right")
+        plt.savefig(outpath+'roc.png')
+        plt.close()
 
 '''
 todo, process training and testing data
@@ -238,4 +256,4 @@ if __name__ == "__main__":
     lstm = LSTM_model(re_weight=True)
     print('LSTM assembled')
     best_val_score = lstm.train(train_1, train_2, labels)
-    lstm.predict(test_1, test_2, test_ids, best_val_score)
+    # lstm.predict(test_1, test_2, test_ids, best_val_score)
