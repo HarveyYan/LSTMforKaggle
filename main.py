@@ -1,7 +1,7 @@
 from loader import Data
 import gensim
 import numpy as np
-from keras.layers import Dense, Input, LSTM, Embedding, Dropout, Activation
+from keras.layers import Dense, Input, LSTM, Embedding, Dropout, Activation, Conv1D
 from keras.layers.merge import concatenate
 from keras.models import Model
 from keras.layers.normalization import BatchNormalization
@@ -12,7 +12,7 @@ from keras.utils import plot_model
 import matplotlib.pyplot as plt
 import os
 from sklearn.metrics import roc_curve, auc
-
+import datetime
 '''
 hyper parameters
 '''
@@ -25,8 +25,8 @@ VALIDATION_SPLIT = 0.1
 '''
 optimizable hyperparams
 '''
-num_lstm = np.random.randint(175, 275)
-num_dense = np.random.randint(100, 150)
+num_lstm = 270
+num_dense = 150
 rate_drop_lstm = 0.15 + np.random.rand() * 0.25
 rate_drop_dense = 0.15 + np.random.rand() * 0.25
 act = 'relu'
@@ -35,7 +35,7 @@ glove = False
 
 embedding_mat = None
 length = None
-STAMP = 'lstm_%d_%d_%.2f_%.2f'%(num_lstm, num_dense, rate_drop_lstm, rate_drop_dense)
+STAMP = str(datetime.datetime.now()).split('.')[0].replace(':','_')
 outpath = './result/' + STAMP + '/'
 if not os.path.exists(outpath):
     os.makedirs(outpath)
@@ -122,16 +122,8 @@ def get_a_batch(generator, tokenizer):
                              , sample.is_duplicate])
     return batch
 
-class LSTM_model:
+class CONV_LSTM:
 
-    class_weights = {0:1.309028344, 1:0.472001959}
-    '''
-    We know that there are 36.92% positive entities in the train set and about
-     17.46% positive entities in the test set, so in order to map the share of
-      positive entities to be the same, one positive entity in the train set
-      counts for 0.1746 / 0.3692 = 0.472 positive entities in the test set.
-    Similarly, the weight of negative entities in the train set is (1 - 0.1746) / (1 - 0.3692) = 1.309 .
-    '''
     def __init__(self, re_weight = False):
         self.re_weight = re_weight
 
@@ -142,15 +134,109 @@ class LSTM_model:
             input_length = MAX_SEQUENCE_LENGTH,
             trainable = False)
 
+        conv_layer = Conv1D(32, 5, padding='same', activation='relu')
+        conv_layer_2 = Conv1D(64, 3, padding='same', activation='relu')
         lstm_layer = LSTM(num_lstm, dropout=rate_drop_lstm, recurrent_dropout=rate_drop_lstm)
 
         sequence_1_input = Input(shape=(MAX_SEQUENCE_LENGTH,), dtype='int32')
         embedded_sequences_1 = embedding_layer(sequence_1_input)
-        x1 = lstm_layer(embedded_sequences_1)
+        conv_layer_output_1 = Dropout(rate_drop_lstm)(BatchNormalization()(conv_layer(embedded_sequences_1)))
+        x1 = lstm_layer(Dropout(rate_drop_lstm)(BatchNormalization()(conv_layer_2(conv_layer_output_1))))
 
         sequence_2_input = Input(shape=(MAX_SEQUENCE_LENGTH,), dtype='int32')
         embedded_sequences_2 = embedding_layer(sequence_2_input)
-        y1 = lstm_layer(embedded_sequences_2)
+        conv_layer_output_2 = Dropout(rate_drop_lstm)(BatchNormalization()(conv_layer(embedded_sequences_2)))
+        y1 = lstm_layer(Dropout(rate_drop_lstm)(BatchNormalization()(conv_layer_2(conv_layer_output_2))))
+
+        merged = concatenate([x1, y1])
+        normzalized_merged = BatchNormalization()(Dropout(rate_drop_dense)(merged))
+
+        dense = Dense(num_dense, activation='relu')(normzalized_merged)
+        normalized_dense = BatchNormalization()(Dropout(rate_drop_dense)(dense))
+
+        preds = Dense(1, activation='sigmoid')(normalized_dense)
+
+        self.net = Model(inputs=[sequence_1_input, sequence_2_input], outputs= preds)
+        self.net.compile(
+            loss='binary_crossentropy',
+            optimizer='nadam',
+            metrics=['acc']
+        )
+
+    def train(self,train_1, train_2, labels):
+        indices = np.random.permutation(len(train_1))
+        idx_train = indices[:int(len(train_1)*(1-VALIDATION_SPLIT))]
+        idx_val = indices[int(len(train_1) * (1 - VALIDATION_SPLIT)):]
+
+        data_1_train = np.vstack((train_1[idx_train],train_2[idx_train]))
+        data_2_train = np.vstack((train_2[idx_train], train_1[idx_train]))
+        labels_train = np.concatenate((labels[idx_train],labels[idx_train]))
+
+        data_1_val = np.vstack((train_1[idx_val], train_2[idx_val]))
+        data_2_val = np.vstack((train_2[idx_val], train_1[idx_val]))
+        labels_val = np.concatenate((labels[idx_val], labels[idx_val]))
+
+        early_stopping = EarlyStopping(monitor='val_loss', patience=3)
+        best_model_path = outpath + 'weight.h5'
+        model_checkpoint = ModelCheckpoint(best_model_path, save_best_only=True, save_weights_only=True)
+        hist = self.net.fit([data_1_train, data_2_train], labels_train,
+                     validation_data=([data_1_val,data_2_val],labels_val),
+                     epochs=200, batch_size=2048,shuffle=True, callbacks=[early_stopping, model_checkpoint])
+
+        plot_model(self.net, to_file=outpath+'net.png')
+        self.plot_roc([data_1_val,data_2_val], labels_val)
+        np.savetxt(outpath + 'acc.txt', np.array(hist.history['acc']), delimiter=',')
+        np.savetxt(outpath + 'val_acc.txt', np.array(hist.history['val_acc']), delimiter=',')
+        np.savetxt(outpath + 'loss.txt', np.array(hist.history['loss']), delimiter=',')
+        np.savetxt(outpath + 'val_loss.txt', np.array(hist.history['val_loss']), delimiter=',')
+        plot_some_curves(hist)
+
+        self.net.load_weights(best_model_path)
+
+    def plot_roc(self, data_validation, labels_validation):
+        preds = self.net.predict(data_validation, batch_size=2048)
+        fpr, tpr, _ = roc_curve(labels_validation, preds)
+        roc_auc = auc(fpr,tpr)
+        plt.figure()
+        plt.plot(fpr, tpr, color='darkorange', label='ROC curve (area = %0.2f)' % roc_auc)
+        plt.plot([0, 1], [0, 1], color='navy', linestyle='--')
+        plt.xlim([0.0, 1.0])
+        plt.ylim([0.0, 1.05])
+        plt.xlabel('False Positive Rate')
+        plt.ylabel('True Positive Rate')
+        plt.title('Receiver operating characteristic example')
+        plt.legend(loc="lower right")
+        plt.savefig(outpath+'roc.png')
+        plt.close()
+
+
+class LSTM_model:
+    class_weights = {0:1.309028344, 1:0.472001959}
+    '''
+    We know that there are 36.92% positive entities in the train set and about
+     17.46% positive entities in the test set, so in order to map the share of
+      positive entities to be the same, one positive entity in the train set
+      counts for 0.1746 / 0.3692 = 0.472 positive entities in the test set.
+    Similarly, the weight of negative entities in the train set is (1 - 0.1746) / (1 - 0.3692) = 1.309 .
+    '''
+    def __init__(self, re_weight = False):
+        self.re_weight = re_weight
+        embedding_layer = Embedding(
+            length,
+            EMBEDDING_DIM,
+            weights=[embedding_mat],
+            input_length = MAX_SEQUENCE_LENGTH,
+            trainable = False)
+        lstm_layer = LSTM(num_lstm, dropout=rate_drop_lstm, recurrent_dropout=rate_drop_lstm, return_sequences=True)
+        lstm_layer_2 = LSTM(int(num_lstm/2), dropout=rate_drop_lstm, recurrent_dropout=rate_drop_lstm)
+
+        sequence_1_input = Input(shape=(MAX_SEQUENCE_LENGTH,), dtype='int32')
+        embedded_sequences_1 = embedding_layer(sequence_1_input)
+        x1 = lstm_layer_2(lstm_layer(embedded_sequences_1))
+
+        sequence_2_input = Input(shape=(MAX_SEQUENCE_LENGTH,), dtype='int32')
+        embedded_sequences_2 = embedding_layer(sequence_2_input)
+        y1 = lstm_layer_2(lstm_layer(embedded_sequences_2))
 
         merged = concatenate([x1, y1])
         normzalized_merged = BatchNormalization()(Dropout(rate_drop_dense)(merged))
@@ -227,16 +313,15 @@ class LSTM_model:
         plt.savefig(outpath+'roc.png')
         plt.close()
 
-'''
-todo, process training and testing data
-'''
+
 if __name__ == "__main__":
-    tokenizer, texts_train_1, texts_train_2, train_labels, texts_test_1, texts_test_2, test_ids = Data.get_tokenizer_and_data()
+    # tokenizer, texts_train_1, texts_train_2, train_labels, texts_test_1, texts_test_2, test_ids = Data.get_tokenizer_and_data()
+    tokenizer, texts_train_1, texts_train_2, train_labels= Data.get_training_data()
     print('padding and converting sequences')
     train_1 = pad_sequences(tokenizer.texts_to_sequences(texts_train_1), maxlen=MAX_SEQUENCE_LENGTH)
     train_2 = pad_sequences(tokenizer.texts_to_sequences(texts_train_1), maxlen=MAX_SEQUENCE_LENGTH)
-    test_1 = pad_sequences(tokenizer.texts_to_sequences(texts_test_1), maxlen=MAX_SEQUENCE_LENGTH)
-    test_2 = pad_sequences(tokenizer.texts_to_sequences(texts_test_2), maxlen=MAX_SEQUENCE_LENGTH)
+    # test_1 = pad_sequences(tokenizer.texts_to_sequences(texts_test_1), maxlen=MAX_SEQUENCE_LENGTH)
+    # test_2 = pad_sequences(tokenizer.texts_to_sequences(texts_test_2), maxlen=MAX_SEQUENCE_LENGTH)
     labels = np.array(train_labels)
     print('acquired training and testing data')
 
@@ -253,7 +338,10 @@ if __name__ == "__main__":
     generate_embeddings(model, tokenizer)
     print('acquired embedding matrix')
 
-    lstm = LSTM_model(re_weight=True)
+    lstm = CONV_LSTM(re_weight=False)
     print('LSTM assembled')
+    setting = open(outpath+'setting.txt','w')
+    setting.writelines('lstm_%d_%d_%.2f_%.2f'%(num_lstm, num_dense, rate_drop_lstm, rate_drop_dense))
+    setting.close()
     best_val_score = lstm.train(train_1, train_2, labels)
     # lstm.predict(test_1, test_2, test_ids, best_val_score)

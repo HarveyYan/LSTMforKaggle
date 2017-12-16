@@ -106,6 +106,38 @@ class Data:
         return tokenizer, texts_train_1, texts_train_2, train_labels, texts_test_1, texts_test_2, test_ids
 
     @classmethod
+    def get_training_data(cls):
+        if not os.path.isfile('cache/texts_train_1'):
+            texts_train_1 = list()
+            texts_train_2 = list()
+            train_labels = list()
+            with open('train.csv', 'r') as train_csv:
+                reader = csv.reader(train_csv)
+                next(reader)
+                for row in reader:
+                    temp = TrainData(row[0], row[1], row[2], row[3], row[4], row[5])
+                    temp.process()
+                    texts_train_1.append(temp.question1)
+                    texts_train_2.append(temp.question2)
+                    # note converting string to integer
+                    train_labels.append(int(temp.is_duplicate))
+            cls.save('cache/texts_train_1',texts_train_1)
+            cls.save('cache/texts_train_2', texts_train_2)
+            cls.save('cache/train_labels', train_labels)
+        else:
+            texts_train_1 = pickle.load(open('cache/texts_train_1','rb'))
+            texts_train_2 = pickle.load(open('cache/texts_train_2','rb'))
+            train_labels = pickle.load(open('cache/train_labels','rb'))
+
+        print('training data processed and loaded')
+        train_labels = [int(label) for label in train_labels]
+        texts_train_1 = [' '.join(sen) for sen in texts_train_1]
+        texts_train_2 = [' '.join(sen) for sen in texts_train_2]
+        tokenizer = Tokenizer(num_words=MAX_NB_WORDS)
+        tokenizer.fit_on_texts(texts_train_1 + texts_train_2)
+        return tokenizer, texts_train_1, texts_train_2, train_labels
+
+    @classmethod
     def save(cls, filename, data):
         with open(filename, "wb") as output:
             pickle.dump(data, output)
